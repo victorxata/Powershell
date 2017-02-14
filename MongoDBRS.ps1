@@ -3,9 +3,12 @@
 #   Repository: https://github.com/victorxata/Powershell
 #   Contact:    @victorxata
 #   License:    Apache License Version 2.0 
+#   Version:    1
+#   Requires    -RunAsAdministrator
 #---------------------------------------------------------------------------------------------
 
 param([string]$debug="SilentlyContinue")
+
 Write-host "Starting process" -foregroundColor Yellow
 $DebugPreference = "Continue"
 $installer = [MongoInstaller]::new()
@@ -18,40 +21,31 @@ Write-host "Finished" -foregroundColor Yellow
 
 class Utils{
 
-    InvokeMSIExec([string]$Args) {
-       
-        If($DebugPreference = "Continue") {Write-Host "Invoke-MSIExec" -ForegroundColor DarkGray}
+    InvokeProcess([string]$Exec, [string]$Arg) {
 
-        Write-Verbose ($Args -join " ")
-        # Note: The Out-Null forces the function to wait until the prior process completes, nifty
-        & (Join-Path $env:SystemRoot 'System32\msiexec.exe') $Args | Out-Null
+        If($DebugPreference = "Continue") {Write-Host "Invoke-Process $Exec $Arg" -ForegroundColor DarkGray}
+
+        Write-host "Command to execute ["$Exec $Arg" ]" -foreground "green"
+
+        $processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processStartInfo.RedirectStandardError = $true
+        $processStartInfo.RedirectStandardOutput = $true
+        $processStartInfo.UseShellExecute = $false
+
+        $processStartInfo.FileName = $Exec
+        $processStartInfo.Arguments = $Arg
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processStartInfo
+        $process.Start() | Out-Null
+        $process.WaitForExit()
+        $standardError = $process.StandardError.ReadToEnd()
+        if ($process.ExitCode) {
+           Write-Error $standardError
+        } else {
+            Write-Host $standardError
+        }
     }
-    
-    InvokeProcess($Exec, $Args) {
-
-    If($DebugPreference = "Continue") {Write-Host "Invoke-Process $Exec $Args" -ForegroundColor DarkGray}
-
-    Write-host "Command to execute ["$Exec $Args" ]" -foreground "green"
-
-    $processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $processStartInfo.RedirectStandardError = $true
-    $processStartInfo.RedirectStandardOutput = $true
-    $processStartInfo.UseShellExecute = $false
-
-    $processStartInfo.FileName = $Exec
-    $processStartInfo.Arguments = $Args
-
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $processStartInfo
-    $process.Start() | Out-Null
-    $process.WaitForExit()
-    $standardError = $process.StandardError.ReadToEnd()
-    if ($process.ExitCode) {
-       Write-Error $standardError
-    } else {
-        Write-Host $standardError
-    }
-}
 
     [string]GetValue([string]$Prompt, [string]$Default){
 
@@ -81,7 +75,9 @@ class OpenSSLUtils{
      [string]$SigningCA
      [string]$rootCAPEM
      [string]$certsFolder
+     [string]$opensslCfg
      [Utils]$Utils
+     [string]$pemFile
 
     OpenSSLUtils([string]$root){
         $this.rootFolder = $root
@@ -92,7 +88,7 @@ class OpenSSLUtils{
 
         If($DebugPreference = "Continue") {Write-host "OpenSSLUtils::SetOpenSSLConfigFile" -ForegroundColor DarkGray}
 
-        $this.opensslCfg = Join-Path $this.opensslBinFolder "openssl.cfg"
+        $this.opensslCfg = Join-Path $this.opensslFolder "openssl.cfg"
         Write-host "Searching openssl config file at $this.opensslCfg" -ForegroundColor cyan
 
         if (-not (Test-Path $this.opensslCfg)){
@@ -285,8 +281,14 @@ ess_cert_id_chain	= no
 
         If($DebugPreference = "Continue") {Write-host "OpenSSLUtils::OpenSSLCommand" -ForegroundColor DarkGray}
 
-        if (-not(Test-Path $this.opensslFolder)){
-            $this.opensslFolder = Utils.GetValue ("Input OpenSSL bin folder", $this.defaultOpenSSLBinFolder)
+        if($this.opensslFolder){
+            if (-not(Test-Path $this.opensslFolder)){
+                $this.opensslFolder = $this.Utils.GetValue("Input OpenSSL bin folder", $this.defaultOpenSSLBinFolder)
+                $this.openssl = Join-Path $this.opensslFolder "openssl.exe"
+            }
+        } 
+        Else {
+            $this.opensslFolder = $this.Utils.GetValue("Input OpenSSL bin folder", $this.defaultOpenSSLBinFolder)
             $this.openssl = Join-Path $this.opensslFolder "openssl.exe"
         }
         return $this.openssl
@@ -296,7 +298,7 @@ ess_cert_id_chain	= no
     
     If($DebugPreference = "Continue") {Write-Host "OpenSSLUtils::GenerateRootCA" -ForegroundColor DarkGray}
 
-        $this.openssl = $this.OpenSSLCommand
+        $this.OpenSSLCommand()
         
         if (Test-path $this.openssl){
 
@@ -304,7 +306,7 @@ ess_cert_id_chain	= no
         
             $this.CAFile = Join-Path $this.rootFolder "root-ca.key"
 
-            $arguments = "genrsa -out $this.CAFile 2048"
+            $arguments = "genrsa -out " + $this.CAFile + " 2048"
 
            $this.Utils.InvokeProcess($this.openssl, $arguments)
                   
@@ -327,15 +329,15 @@ ess_cert_id_chain	= no
 
         If($DebugPreference = "Continue") {Write-Host "OpenSSLUtils::GenerateRootCAcrt" -ForegroundColor DarkGray}
 
-        $this.openssl = $this.OpenSSLCommand
+        $this.openssl = $this.OpenSSLCommand()
         
         if (Test-path $this.openssl){
 
             $this.CAPubFile = Join-Path $this.rootFolder "root-ca.crt"
         
             $subject = "/C=IE/ST=D/L=Accenture/O=Technology/CN=ROOTCA"
-            $args = "req -new -x509 -days 3650 -key $this.CAFile -out $this.CAPubFile" + ' -subj "' + $subject + '"'
-            $arguments = $args
+            $arg = "req -new -x509 -days 3650 -key " + $this.CAFile + " -out " + $this.CAPubFile + ' -subj "' + $subject + '"'
+            $arguments = $arg
         
             $this.Utils.InvokeProcess($this.openssl, $arguments)
                   
@@ -358,14 +360,17 @@ ess_cert_id_chain	= no
     
         If($DebugPreference = "Continue") {Write-Host "OpenSSLUtils::MoveCAFiles" -ForegroundColor DarkGray}
 
-        Write-host "Creating folder $this.rootFolder\RootCA"
-
+        
         $rootCA = Join-Path $this.rootFolder "RootCA"
+        Write-host "Creating folder "  $rootCA
         New-Item -ItemType directory -path $rootCA
+        
         $tempFile = Join-Path $rootCA "ca.db.index"
         New-Item $tempFile -ItemType file
 
-        Move-Item "root-ca*.*" $rootCA
+        Write-host "Moving files to " $rootCA
+        $tempFile = Join-Path $this.rootFolder "root-ca.*"
+        Move-Item $tempFile $rootCA
 
         $this.CAPubFile = Join-Path $rootCA "root-ca.crt"
         $this.CAFile = Join-Path $rootCA "root-ca.key"
@@ -389,16 +394,95 @@ ess_cert_id_chain	= no
 
         $this.signingCA = Join-Path $this.rootFolder "SigningCA"
         New-Item -ItemType directory -path $this.signingCA
+        
+        $rootCA = $rootCA.Replace('\','\\')
+        $this.SigningCA = $this.signingCA.Replace('\','\\')
+        
+        $temp1 = "
+RANDFILE        = .rnd
+[ ca ]
+default_ca    = CA_default        # The default ca section
 
-      "[ RootCA ]
-    dir             = $this.rootCA
-    certs           = `$dir/ca.db.certs
-    database        = `$dir/ca.db.index
-    new_certs_dir   = `$dir/ca.db.certs
-    certificate     = `$dir/root-ca.crt
-    serial          = `$dir/ca.db.serial
-    private_key     = `$dir/root-ca.key
-    RANDFILE        = `$dir/ca.db.rand
+[ CA_default ]
+
+dir           = C:\\openssl\\bin\\CA       # Where everything is kept
+certs         = `$dir\\certs                # Where the issued certs are kept
+crl_dir       = `$dir\\crl                  # Where the issued crl are kept
+database      = `$dir\\index.txt            # database index file.
+new_certs_dir = `$dir\\newcerts             # default place for new certs.
+
+certificate   = `$dir\\cacert.pem           # The CA certificate
+serial        = `$dir\\serial               # The current serial number
+crl           = `$dir\\crl.pem              # The current CRL
+private_key   = `$dir\\private\\cakey.pem   # The private key
+RANDFILE      = `$dir\\private\\private.rnd # private random number file
+
+x509_extensions  = x509v3_extensions        # The extentions to add to the cert
+default_days     = 365                      # how long to certify for
+default_crl_days = 30                       # how long before next CRL
+default_md       = md5                      # which md to use.
+preserve         = no                       # keep passed DN ordering
+
+policy        = policy_match
+
+[ policy_match ]
+countryName            = match
+stateOrProvinceName    = match
+organizationName       = match
+organizationalUnitName = optional
+commonName             = supplied
+emailAddress           = optional
+
+[ policy_anything ]
+countryName            = Ireland
+stateOrProvinceName    = Dublin
+localityName           = Dublin
+organizationName       = Vizasoft
+organizationalUnitName = Technology
+commonName             = supplied
+emailAddress           = victorxata@gmail.com
+
+[ req ]
+default_bits        = 1024
+default_keyfile     = privkey.pem
+distinguished_name  = req_distinguished_name
+attributes          = req_attributes
+
+[ req_distinguished_name ]
+countryName            = IE
+countryName_min        = 2
+countryName_max        = 2
+
+stateOrProvinceName    = State or Province Name (full name)
+
+localityName           = Locality Name (eg, city)
+
+0.organizationName     = Organization Name (eg, company)
+
+organizationalUnitName = Organizational Unit Name (eg, section)
+
+commonName            = Common Name (eg, your website’s domain name)
+commonName_max        = 64
+
+emailAddress          = Email Address
+emailAddress_max      = 40
+
+[ req_attributes ]
+challengePassword     = A challenge password
+challengePassword_min = 4
+challengePassword_max = 20
+
+[ x509v3_extensions ]
+
+[ RootCA ]
+    dir             = " + $rootCA + " 
+    certs           = `$dir\\ca.db.certs
+    database        = `$dir\\ca.db.index
+    new_certs_dir   = `$dir\\ca.db.certs
+    certificate     = `$dir\\root-ca.crt
+    serial          = `$dir\\ca.db.serial
+    private_key     = `$dir\\root-ca.key
+    RANDFILE        = `$dir\\ca.db.rand
     default_md      = sha256
     default_days    = 365
     default_crl_days= 30
@@ -406,15 +490,15 @@ ess_cert_id_chain	= no
     unique_subject  = no
     policy          = policy_match
 
-    [ SigningCA ]
-    dir             = $this.signingCA
-    certs           = $this.signingCA\ca.db.certs
-    database        = $this.signingCA\ca.db.index
-    new_certs_dir   = $this.signingCA\ca.db.certs
-    certificate     = $this.signingCA\signing-ca.crt
-    serial          = $this.signingCA\ca.db.serial
-    private_key     = $this.signingCA\signing-ca.key
-    RANDFILE        = $this.signingCA\ca.db.rand
+[ SigningCA ]
+    dir             = " + $this.signingCA + "
+    certs           = " + $this.signingCA + "\\ca.db.certs
+    database        = " + $this.signingCA + "\\ca.db.index
+    new_certs_dir   = " + $this.signingCA + "\\ca.db.certs
+    certificate     = " + $this.signingCA + "\\signing-ca.crt
+    serial          = " + $this.signingCA + "\\ca.db.serial
+    private_key     = " + $this.signingCA + "\\signing-ca.key
+    RANDFILE        = " + $this.signingCA + "\\ca.db.rand
     default_md      = sha256
     default_days    = 365
     default_crl_days= 30
@@ -422,23 +506,23 @@ ess_cert_id_chain	= no
     unique_subject  = no
     policy          = policy_match
 
-    [ policy_match ]
-    countryName     = match
-    stateOrProvinceName = match
-    localityName            = match
-    organizationName    = match
-    organizationalUnitName  = optional
-    commonName      = supplied
-    emailAddress        = optional
+[ v3_ca ]
+    subjectKeyIdentifier   = hash
+    authorityKeyIdentifier = keyid:always,issuer
+    basicConstraints       = CA:true
 
-    [ v3_req ]
-    basicConstraints = CA:FALSE
-    keyUsage = nonRepudiation, digitalSignature, keyEncipherment
+[ policy_match ]
+    countryName            = match
+    stateOrProvinceName    = match
+    localityName           = match
+    organizationName       = match
+    organizationalUnitName = optional
+    commonName             = supplied
+    emailAddress           = optional
 
-    [ v3_ca ]
-    subjectKeyIdentifier=hash
-    authorityKeyIdentifier=keyid:always,issuer:always
-    basicConstraints = CA:true" | Out-File -FilePath $this.CACfgFile -Append
+"
+
+    $temp1 | Out-File -FilePath $this.CACfgFile -Append
     }
 
     GenerateCAFiles(){
@@ -456,14 +540,14 @@ ess_cert_id_chain	= no
 
         If($DebugPreference = "Continue") {Write-Host "OpenSSLUtils::GenerateSigningKey" -ForegroundColor DarkGray}
 
-        $this.openssl = $this.OpenSSLCommand
+        $this.openssl = $this.OpenSSLCommand()
         
         if (Test-path $this.openssl){
         
             Write-host "Creating a signing key..."
 
             $this.CASigningKey = Join-Path $this.rootFolder "signing-ca.key"
-            $arguments = "genrsa -out $this.CASigningKey 2048  "
+            $arguments = "genrsa -out " + $this.CASigningKey + " 2048  "
 
              $this.Utils.InvokeProcess($this.openssl, $arguments)
                   
@@ -486,14 +570,14 @@ ess_cert_id_chain	= no
     
         If($DebugPreference = "Continue") {Write-Host "OpenSSLUtils::GenerateSigningCsr" -ForegroundColor DarkGray}
 
-        $this.openssl = $this.OpenSSLCommand
+        $this.openssl = $this.OpenSSLCommand()
         
         if (Test-path $this.openssl){
 
             $this.SigningCACSR = Join-Path $this.rootFolder "Signing-ca.csr"
             $subject = "/C=IE/ST=D/L=Accenture/O=Technology/CN=CA-SIGNER"
-            $args = "req -new -days 10000 -key  $this.CASigningKey -out $this.SigningCACSR" + ' -subj "' + $subject + '"' 
-            $arguments = $args
+            $arg = "req -new -days 10000 -key " + $this.CASigningKey + " -out " + $this.SigningCACSR + ' -subj "' + $subject + '"' 
+            $arguments = $arg
 
             $this.Utils.InvokeProcess($this.openssl, $arguments)
                   
@@ -517,7 +601,7 @@ ess_cert_id_chain	= no
     
         If($DebugPreference = "Continue") {Write-Host "OpenSSLUtils::GenerateSigningCrt" -ForegroundColor DarkGray}
 
-        $this.openssl = $this.OpenSSLCommand
+        $this.openssl = $this.OpenSSLCommand()
         
         if (Test-path $this.openssl){
         
@@ -525,7 +609,7 @@ ess_cert_id_chain	= no
 
         
             $this.SigningCACRT = Join-Path $this.rootFolder "Signing-ca.crt"
-            $arguments = "ca -batch -name RootCA -config $this.CACfgFile -extensions v3_ca -out $this.SigningCACRT -infiles $this.SigningCACSR"
+            $arguments = "ca -batch -name RootCA -config " + $this.CACfgFile + " -extensions v3_ca -out " + $this.SigningCACRT + " -infiles " + $this.SigningCACSR
 
             $this.Utils.InvokeProcess($this.openssl, $arguments)
 
@@ -552,7 +636,8 @@ ess_cert_id_chain	= no
         $tempFile = Join-Path $this.signingCA "ca.db.index"
         New-Item $tempFile -ItemType file
 
-        Move-Item "signing-ca*.*" $this.signingCA
+        $tempFile = Join-Path $this.rootCA "signing-ca.*"
+        Move-Item $tempFile $this.signingCA
     
         $random = Get-Random -Maximum 1000 -Minimum 1
         $tempFile = Join-Path $this.signingCA "ca.db.rand"
@@ -582,6 +667,49 @@ ess_cert_id_chain	= no
         $this.GenerateSigningCrt()
     
         $this.MoveSigningFiles()
+    }
+
+    [string]GeneratePEMFile([string]$filename){
+
+        If($DebugPreference = "Continue") {Write-Host "OpenSSLUtils::GeneratePEMFile" -ForegroundColor DarkGray}
+
+        $this.openssl = $this.OpenSSLCommand()
+        
+        if (Test-path $this.openssl){
+        
+            #Invoke-Process $openssl $arguments
+
+            $this.pemFile = $filename + ".pem"
+            $this.pemFile = Join-Path $this.rootFolder $this.pemFile
+            $crt = $filename + ".crt"
+            $key = $filename + ".key"
+            $crt = Join-Path $this.rootFolder $crt
+            $key = Join-Path $this.rootFolder $key
+
+            $subj = "/C=IE/ST=Dublin/L=Dublin/O=Vizasoft/OU=Technology/CN=mongodbTestRS"
+            $arguments = "req -newkey rsa:2048 -new -x509 -days 365 -nodes -out " + $crt + " -keyout " + $key + ' -subj "' + $subj + '"' 
+
+            $this.Utils.InvokeProcess($this.openssl, $arguments)
+
+            
+            
+            cat $crt,$key | sc $this.pemFile 
+
+            if (Test-path $this.pemFile){
+                Write-host "Created PEM file at ["$this.pemFile"]" -foreground "cyan"
+                return $this.pemFile
+            }
+            Else {
+                Write-host "ERROR: PEM file not created" -foregroundColor Red
+                Exit        
+            }
+        }
+
+	    Else
+	    {
+		    Write-host "Couldn't find OpenSSL" -foreground "red"
+            Exit
+	    }
     }
 }
 
@@ -632,24 +760,32 @@ class MongoDBUtils{
 
         $arguments = "/quiet /passive /i $this.mongoDBMSIFileTarget INSTALLLOCATION=$this.mongoDBTargetFolder ADDLOCAL=$this.mongoDBAddLocal"
 
-        $this.Utils.InvokeMSIExec("/a $this.mongoDBMSIFileTarget /qb TARGETDIR=$this.mongoDBTargetFolder")
+        $arg = '/quiet /passive /i ' 
+        $arg = $arg + $this.mongoDBMSIFileTarget
+        $arg = $arg + " INSTALLLOCATION=" 
+        $arg = $arg + $this.mongoDBTargetFolder 
+        $arg = $arg + " ADDLOCAL=" 
+        $arg = $arg + $this.mongoDBAddLocal
+        
+        If($DebugPreference = "Continue") {Write-Host "MongoDBUtils::GetMongoDb::Args $args" -ForegroundColor DarkGray}
+        $this.Utils.InvokeProcess("msiexec.exe", $arg)
 
         Write-host "MongoDB installed" -ForegroundColor "cyan"
     }
 
-    SetMongoDbKeyFile(){
+    [string]SetMongoDbKeyFile(){
 
         If($DebugPreference = "Continue") {Write-Host "Set-MongoDb-KeyFile" -ForegroundColor DarkGray}
 
-        $this.filenameKeyFile = Get-Value "Input MongoDB KeyFile" $this.defaultFileName
+        $this.filenameKeyFile = $this.Utils.GetValue("Input MongoDB KeyFile", $this.defaultFileName)
 
 	    $this.filenameKeyFile = Join-Path $this.rootFolder $this.filenameKeyFile
 
 	    Write-host "Selected Keyfile ["$this.filenameKeyFile" ]" -foreground "green" 
 	
-	    $openssl = $this.openSSLUtils.OpenSSLCommand
+	    $openssl = $this.openSSLUtils.OpenSSLCommand()
     
-	    $arguments = "rand -base64 756 -out $this.filenameKeyFile"
+	    $arguments = "rand -base64 756 -out " + $this.filenameKeyFile
 	
 	    if (Test-path $openssl){
 
@@ -657,6 +793,7 @@ class MongoDBUtils{
         
             if (Test-path $this.filenameKeyFile){
                 Write-host "Created KeyFile at ["$this.filenameKeyFile"]" -foreground "cyan"
+                return $this.filenameKeyFile
             }
             Else {
                 Write-host "ERROR: KeyFile not created" -foregroundColor Red
@@ -687,10 +824,15 @@ class Nodes{
     [string]$defaultReplicaSetName = 'TestRS'
     [string]$replicaSetName
     [Utils]$Utils
+    [string]$keyFile
+    [string]$pemFile
 
-    Nodes([string]$root,[Utils]$utl){
-        $this.rootFolder = root
+    Nodes([string]$root,[Utils]$utl,[string]$key,[string]$pem){
+        $this.rootFolder = $root
         $this.Utils = $utl
+        $this.keyFile = $key
+        $this.pemFile = $pem
+
         $numberOfNodes = $this.Utils.GetValue("Number of nodes in the ReplicaSet", $this.defaultNumberOfNodes)
 
         $servicePrefix = $this.Utils.GetValue("Service name prefix", $this.defaultServicePrefix)
@@ -703,9 +845,10 @@ class Nodes{
         for ($i=1; $i -le $numberOfNodes; $i++){
 	        $nodeName = $servicePrefix + "{0}" -f $i
 	        $this.nodes += $nodeName
-	        $this.ports += $initialPort + $i
+	        $this.ports += [int]$initialPort + [int]$i
         }
         Write-host "Nodes array ["$this.nodes"]" -foreground "cyan"
+        Write-host "Ports array ["$this.ports"]" -foreground "cyan"
     }
 
     RemoveNodes(){
@@ -714,11 +857,18 @@ class Nodes{
 
         Write-host 'Removing Nodes...' -foreground "Cyan"
 	    Foreach($node in $this.nodes){
-		    $service = Get-WmiObject -Class Win32_Service -Filter "Name='$node'"
+        $net = "mongod"
+	    $arguments = "--serviceName " + $node + " --remove"
+
+        $this.Utils.InvokeProcess($net, $arguments)
+		
+        <#    $service = Get-WmiObject -Class Win32_Service -Filter "Name='$node'"
 		    if ($service){
 			    $service.delete()
-			    Write-host "Removed Node ["$node"]" -foreground "Cyan"
-		    }
+                if (-not ($service)){
+			        Write-host "Removed Node ["$node"]" -foreground "Cyan"
+		        }
+            }#>
 	    }
     }
 
@@ -737,7 +887,7 @@ class Nodes{
 	    }
     }
 
-    CreateMongoDBConfigFile([string]$node, [int]$port, [string]$PEMKeyFile, [string]$filenameKeyFile){
+    [string]CreateMongoDBConfigFile([string]$node, [int]$port){
         
         If($DebugPreference = "Continue") {Write-Host "Nodes::CreateMongoDBConfigFile" -ForegroundColor DarkGray}
 
@@ -757,36 +907,38 @@ class Nodes{
 		
 	    $configFile = Join-Path $path "mongod.cfg"
 	    New-Item $configFile -ItemType file
-	    "systemLog:" | Out-File -FilePath $configFile -Append
-	    "    destination: file" | Out-File -FilePath $configFile -Append
+	            "systemLog:" | Out-File -FilePath $configFile -Append
+	            "    destination: file" | Out-File -FilePath $configFile -Append
 	    $logdest = Join-Path $pathlogs "mongod.log"
 	    $temp = "    path: " + $logdest
 	    $temp | Out-File -FilePath $configFile -Append
-	    "storage:" | Out-File -FilePath $configFile -Append
+	            "storage:" | Out-File -FilePath $configFile -Append
 	    $temp = "    dbPath: " + $pathdb
 	    $temp | Out-File -FilePath $configFile -Append
-	    "replication:" | Out-File -FilePath $configFile -Append
+	            "replication:" | Out-File -FilePath $configFile -Append
 	    $temp = "    replSetName: " + $this.replicaSetName
 	    $temp | Out-File -FilePath $configFile -Append
-	    $temp = "    port: " + $this.ports[$port]
+	            "net:" | Out-File -FilePath $configFile -Append
+	    $temp = "    port: " + $port
 	    $temp | Out-File -FilePath $configFile -Append
-	    "    ssl:" | Out-File -FilePath $configFile -Append
-	    "        mode: allowSSL" | Out-File -FilePath $configFile -Append
-	    $temp = "        PEMKeyFile: " + $PEMKeyFile
+	            "    ssl:" | Out-File -FilePath $configFile -Append
+	            "        mode: allowSSL" | Out-File -FilePath $configFile -Append
+	    $temp = "        PEMKeyFile: " + $this.PemFile
 	    $temp | Out-File -FilePath $configFile -Append
-	    "processManagement:" | Out-File -FilePath $configFile -Append
-	    "    windowsService:" | Out-File -FilePath $configFile -Append
+	            "processManagement:" | Out-File -FilePath $configFile -Append
+	            "    windowsService:" | Out-File -FilePath $configFile -Append
 	    $temp = "        serviceName: " + $node
 	    $temp | Out-File -FilePath $configFile -Append
 	    $temp = "        displayName: " + $node
 	    $temp | Out-File -FilePath $configFile -Append
-	    "security:" | Out-File -FilePath $configFile -Append
-	    "#    authorization: enabled" | Out-File -FilePath $configFile -Append
-	    $temp = "    keyFile: " + $filenameKeyFile
+	            "security:" | Out-File -FilePath $configFile -Append
+	            "#    authorization: enabled" | Out-File -FilePath $configFile -Append
+	    $temp = "    keyFile: " + $this.keyFile
 	    $temp | Out-File -FilePath $configFile -Append
 	
         if (Test-Path $configFile){
 		    Write-host "Created config file ["$configFile"]" -ForegroundColor Cyan
+            return $configFile
         }
         Else{
             Write-host "ERROR: config file not created" -ForegroundColor Red
@@ -802,7 +954,7 @@ class Nodes{
 		
 	    $mongo = "mongod.exe"		
 		
-	    $arguments = "--config " + $configFile + "--install"
+	    $arguments = "--config " + $configFile + " --install"
 		
 	    $this.Utils.InvokeProcess($mongo, $arguments)
 
@@ -823,12 +975,58 @@ class Nodes{
 	    $currentPort = 0
 	    Foreach ($node in $this.nodes){
 
-            $configFile = $this.CreateMongoDBConfigFile($node, $currentPort)
+            $configFile = $this.CreateMongoDBConfigFile($node, $this.ports[$currentPort])
 		
 		    $this.RegisterService($node, $configFile)
 
 		    $currentPort++
 	    }
+    }
+
+    CreateReplicaSet(){
+    
+        $replicaSetJS = '
+rs.initiate( 
+   { _id:"' + $this.replicaSetName + '"' + ",`r`n
+      members:[        `r`n"
+        [int]$port = 0
+        Foreach($node in $this.nodes){
+            $hostRS = '"localhost:' + $this.ports[$port]  + '"' 
+            $replicaSetJS = $replicaSetJS + '{ _id:' + $port + ',host:' + $hostRS + '},' 
+            $port ++
+	    }
+        $replicaSetJS = $replicaSetJS.Substring(0,$replicaSetJS.Length-1)
+        $replicaSetJS = $replicaSetJS + "`r`n]
+   }
+);
+conf=rs.conf();`r`n"
+
+        $port = 0
+        Foreach($node in $this.nodes){
+            $replicaSetJS = $replicaSetJS + "conf.members[" + $port + "].priority=1;`r`n"
+            $port++
+        }
+        $replicaSetJS = $replicaSetJS + "rs.reconfig(conf);
+  rs.slaveOk();
+  quit();"
+
+        $replicaSetJSFile = Join-Path $this.rootFolder "initReplicaSet.js"
+        if (Test-Path $replicaSetJSFile){
+            Remove-Item $replicaSetJSFile
+        }
+        $replicaSetJS | Out-File $replicaSetJSFile
+
+        $exec = "mongo"
+        $arguments = "--port "+ $this.ports[0] + " admin --shell " + $replicaSetJSFile
+        $this.Utils.InvokeProcess($exec, $arguments)
+
+    }
+
+    CreateReplicaSetUsers(){
+        
+        mongo "mongodb://mongo:27005,mongo:27006,mongo:27007,mongo:27008/admin?replicaSet=TestRS" --ssl --shell initUsersAdmin.js
+	    mongo "mongodb://mongo:27005,mongo:27006,mongo:27007,mongo:27008/admin?replicaSet=TestRS" --ssl --shell initUsersRabbitMQ.js
+    
     }
 }
 
@@ -842,23 +1040,29 @@ class MongoInstaller{
     #                       D E F A U L T    V A L U E S
     #---------------------------------------------------------------------------------------------
 
-    [string]$defaultDownloadMongoDB = 'N'
-    [string]$defaultCreateKeyFile = 'Y'
-    [string]$defaultRemoveInstances = 'Y'
-    [string]$defaultRemoveOldData = 'Y'
+    [string]$defaultDownloadMongoDB       = 'N'
+    [string]$defaultCreateKeyFile         = 'Y'
+    [string]$defaultRemoveInstances       = 'Y'
+    [string]$defaultRemoveOldData         = 'Y'
     [string]$defaultCreateWindowsServices = 'Y'
-    [string]$defaultCreateReplicaSet = 'Y'
-    [string]$defaultCreateUsers = 'Y'
-    [string]$defaultReplicaSetName = 'TestRS'
-    [string]$defaultRootFolder = 'C:\QueueSystem'
+    [string]$defaultCreateReplicaSet      = 'Y'
+    [string]$defaultCreateUsers           = 'Y'
+    [string]$defaultCreatePEM             = 'Y'
+    [string]$defaultRootFolder            = 'C:\QueueSystem'
     [string]$rootFolder
-    [string]$defaultCreateCA = 'Y'
-    [string]$defaultCreateCert = 'Y'
-    [string]$defaultCertFile = "mongoRS.pem"
-    [string]$ou_member="MyServers"
-    [string]$ou_client="MyClients"
+    [string]$defaultCreateCA              = 'Y'
+    [string]$defaultCreateCert            = 'Y'
+    [string]$defaultCertFile              = "mongoRS"
+    [string]$ou_member                    = "MyServers"
+    [string]$ou_client                    = "MyClients"
+    [string]$pemFile
+    [string]$defaultPEMFile   
+    [string]$defaultMongoDbKeyFile        = 'c:\QueueSystem\mongodb-keyfile.key'
+    [string]$keyFile            
 
     [Utils]$Utils 
+
+    [Nodes]$Nodes
     
     [MongoDBUtils]$MongoDB
 
@@ -874,7 +1078,7 @@ class MongoInstaller{
 
         $this.rootFolder = $this.Utils.GetValue("Enter default root folder ", $this.defaultRootFolder)
 
-        $downloadMongoDb = $this.Utils.GetValue("Download MongoDB Installation?", $this.defaultDownloadMongoDB)
+        $downloadMongoDb = $this.Utils.GetValue("Install MongoDB?", $this.defaultDownloadMongoDB)
                 
         $this.OpenSSL = [OpenSSLUtils]::new($this.rootFolder)
 
@@ -882,12 +1086,6 @@ class MongoInstaller{
         
         if ($downloadMongoDb -eq "Y"){
             $this.MongoDB.GetMongoDb()  
-        }
-
-        $createMongoKeyFile = $this.Utils.GetValue("Create MongoDB KeyFile?", $this.defaultCreateKeyFile)
-
-        if ($createMongoKeyFile -eq "Y"){
-            $this.MongoDB.SetMongoDbKeyFile()
         }
 
         $createCAFile = $this.Utils.GetValue("Create CA File?", $this.defaultCreateCA)
@@ -899,7 +1097,37 @@ class MongoInstaller{
             $this.OpenSSL.GenerateCASigningFiles()
         }
 
-        $this.Nodes - [Nodes]::new($this.rootFolder, $this.Utils)
+        $createMongoKeyFile = $this.Utils.GetValue("Create MongoDB KeyFile?", $this.defaultCreateKeyFile)
+
+        if ($createMongoKeyFile -eq "Y"){
+            $this.keyFile = $this.MongoDB.SetMongoDbKeyFile()
+        }
+        Else{
+            if(-not($this.defaultMongoDBKeyFile)){
+                Write-Host "Error: A keyFile is needed" -ForegroundColor Red
+                Exit
+            }
+            $this.keyFile = $this.defaultMongoDBKeyFile
+        }
+        
+        $createPEMFile = $this.Utils.GetValue("Create a new PEM file?", $this.defaultCreatePEM)
+
+        if ($createPEMFile -eq "Y"){
+            $this.pemFile = $this.OpenSSL.GeneratePEMFile($this.defaultCertFile)
+        }
+
+        if (-not ($this.pemFile)){
+            $this.defaultPEMFile = Join-Path $this.rootFolder $this.defaultCertFile
+            $this.defaultPEMFile = $this.defaultPEMFile + ".pem"
+            $this.pemFile = $this.Utils.GetValue("Enter existing PEM file: ", $this.defaultPEMFile)
+        }
+
+        if (-not (Test-Path $this.pemFile)){
+            Write-Host "Error: A certificate is needed" -ForegroundColor Red
+            Exit
+        }
+
+        $this.Nodes = [Nodes]::new($this.rootFolder, $this.Utils, $this.keyFile, $this.pemFile)
 
         $removeInstances = $this.Utils.GetValue("Remove windows Services", $this.defaultRemoveInstances)
 
@@ -920,28 +1148,21 @@ class MongoInstaller{
             $this.Nodes.SetWindowsServices()
         }
 
+        $createReplicaSet = $this.Utils.GetValue("Create ReplicaSet?", $this.defaultCreateReplicaSet)
+
+        if ($createReplicaSet -eq 'Y'){
+            $this.Nodes.CreateReplicaSet()
+        }
+
+        $createUsers = $this.Utils.GetValue("Create Users?", $this.defaultCreateUsers)
+
+        if ($createUsers -eq 'Y'){
+            $this.Nodes.CreateReplicaSetUsers()
+        }
     }
 
 }
 
-<#
 
-
-$createRS = Get-Value "Create ReplicaSet?" $defaultCreateReplicaSet
-
-if ($createRS -eq 'Y'){
-	Write-host 'Creating replicaSet...'
-	mongo --ssl --host mongo --port 27005 --shell initReplicaSet.js
-} 
-
-$createUsers = Get-Value "Create Users?" $defaultCreateUsers
-
-if ($createUsers -eq 'Y'){
-	Write-host 'Creating base Users...'
-	mongo "mongodb://mongo:27005,mongo:27006,mongo:27007,mongo:27008/admin?replicaSet=TestRS" --ssl --shell initUsersAdmin.js
-	mongo "mongodb://mongo:27005,mongo:27006,mongo:27007,mongo:27008/admin?replicaSet=TestRS" --ssl --shell initUsersRabbitMQ.js
-}
-
-#>
 
 
